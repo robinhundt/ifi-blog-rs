@@ -3,7 +3,7 @@ use chat_ids::ChatIDs;
 
 use std::time::Duration;
 
-use futures::future::try_join;
+use futures::future::join;
 use futures::StreamExt;
 use std::error::Error;
 use std::path::Path;
@@ -51,7 +51,6 @@ macro_rules! routes {
     };
 }
 
-
 impl BlogBot {
     pub fn new<B, R, P>(bot_token: B, rss_url: R, db_path: P) -> BoxResult<Self>
     where
@@ -71,47 +70,54 @@ impl BlogBot {
     pub async fn run(&mut self) -> BoxResult<()> {
         let me = self.api.send(GetMe).await?;
         self.me.replace(me);
-        let ret = try_join(self.run_process_updates(), self.run_recurring_tasks()).await;
-        if let Err(err) = ret {
-            Err(format!("Encountered critical error: {}", err))?;
-        }
+        join(self.run_process_updates(), self.run_recurring_tasks()).await;
         Ok(())
     }
 
-    async fn run_recurring_tasks(&self) -> BoxResult<()> {
+
+    async fn run_recurring_tasks(&self) {
         loop {
             let ret = self.send_updates_to_subscribers().await;
-            delay_for(Duration::from_secs(10)).await;
+            delay_for(Duration::from_secs(600)).await;
             if let Err(err) = ret {
                 dbg!(err);
             }
         }
     }
 
-    async fn run_process_updates(&self) -> BoxResult<()> {
+    async fn run_process_updates(&self) {
         let mut stream = self.api.stream();
         while let Some(update) = stream.next().await {
-            if let UpdateKind::Message(msg) = update?.kind {
+            let update = match update {
+                Ok(update) => update,
+                Err(err) => {
+                    dbg!(format!("ERROR: {:?}", err));
+                    continue;
+                }
+            };
+            if let UpdateKind::Message(msg) = update.kind {
                 let ret = self.process(&msg).await;
                 if let Err(err) = ret {
-                    self.api
-                        .send(
-                            msg.text_reply(format!(
+                    let ret =
+                        self.api
+                            .send(msg.text_reply(format!(
                                 "An error ocured during your request:\n{}",
                                 err
-                            )),
-                        )
-                        .await?;
+                            )))
+                            .await;
+                    if let Err(err) = ret {
+                        dbg!(format!("ERROR: {:?}", err));
+                    }
                 }
             }
         }
-        Ok(())
+        ()
     }
 
     async fn process(&self, msg: &Message) -> BoxResult<()> {
         match msg.kind {
             MessageKind::Text { ref data, .. } => {
-                routes!(self, data, msg, start, stop, check, latest);
+                routes!(self, data, msg, start, stop, check, latest, about);
             }
             _ => (),
         };
@@ -157,8 +163,12 @@ impl BlogBot {
 
     async fn about(&self, msg: &Message) -> BoxResult<()> {
         let mut reply = msg.text_reply(
-            "Hi, im a small bot written by @robinhundt . ")
-        self.api.send()
+            "Hi, im a small bot written by @robinhundt, that serves you the newest news \
+            from the [CS deanery blog](https://blog.stud.uni-goettingen.de/informatikstudiendekanat/)\n\
+            You can look at my source code on [gitlab](https://gitlab.gwdg.de/robinwilliam.hundt/ifi-blog-rs).\n\
+            I'm written in Rust with bleeding edge features! :D");
+        self.api.send(reply.parse_mode(ParseMode::Markdown)).await?;
+        Ok(())
     }
 
     async fn send_updates_to_subscribers(&self) -> BoxResult<()> {
@@ -193,4 +203,3 @@ fn format_post(post: &Item) -> String {
     let link = post.link().unwrap_or("No link!");
     format!("<b>{}</b>:\n{}\n{}", title, description, link)
 }
-
