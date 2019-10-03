@@ -12,6 +12,7 @@ use telegram_bot::{Api, GetMe, Message, MessageKind, ParseMode, UpdateKind, User
 use tokio::timer::delay_for;
 
 use rss::{Channel, Item};
+use futures::lock::Mutex;
 
 pub type BoxError = Box<dyn Error>;
 
@@ -22,7 +23,7 @@ pub struct BlogBot {
     api: Api,
     me: Option<User>,
     db: ChatIDs,
-    latest_post: Option<Item>,
+    latest_post: Mutex<Option<Item>>,
 }
 
 macro_rules! routes {
@@ -63,7 +64,7 @@ impl BlogBot {
             api: Api::new(bot_token),
             me: None,
             db: ChatIDs::new(db_path)?,
-            latest_post: None,
+            latest_post: Mutex::new(None),
         })
     }
 
@@ -173,9 +174,15 @@ impl BlogBot {
 
     async fn send_updates_to_subscribers(&self) -> BoxResult<()> {
         let latest_post = self.fetch_latest_post()?;
-        if self.latest_post.as_ref() == Some(&latest_post) {
-            return Ok(());
+        {
+            let mut curr_latest_post = self.latest_post.lock().await;
+            if curr_latest_post.as_ref() == Some(&latest_post) || curr_latest_post.is_none() {
+                curr_latest_post.replace(latest_post);
+                return Ok(());
+            }
+
         }
+
         let post_text = format_post(&latest_post);
         for chat_id in self.db.iter() {
             self.api
