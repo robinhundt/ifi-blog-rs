@@ -1,9 +1,10 @@
 use ifi_blog_rs::BlogBot;
 use std::env;
-use std::error::Error;
+use env_logger::Env;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), ifi_blog_rs::BotError> {
+    env_logger::from_env(Env::default().default_filter_or("info"));
     let token = env::var("TELEGRAM_BOT_TOKEN").expect("TELEGRAM_BOT_TOKEN not set");
     let mut bot = BlogBot::new(
         token,

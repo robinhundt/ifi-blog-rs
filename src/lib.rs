@@ -3,16 +3,20 @@ use chat_ids::ChatIDs;
 
 use std::time::Duration;
 
+use log;
+
 use futures::future::join;
 use futures::StreamExt;
 use std::error::Error;
 use std::path::Path;
 use telegram_bot::prelude::*;
-use telegram_bot::{Api, GetMe, Message, MessageKind, ParseMode, UpdateKind, User};
+use telegram_bot::{Api, GetMe, Message, MessageKind, ParseMode, UpdateKind, User, self};
 use tokio::timer::delay_for;
 
-use rss::{Channel, Item};
 use futures::lock::Mutex;
+use rss::{Channel, Item, self};
+
+use snafu::{ResultExt, Snafu};
 
 pub type BoxError = Box<dyn Error>;
 
@@ -26,6 +30,7 @@ pub struct BlogBot {
     latest_post: Mutex<Option<Item>>,
 }
 
+/// A little conveniece macro to reduce long if {} else if {}
 macro_rules! routes {
     ( $self:ident, $data:expr, $msg:expr, $route:ident, $($routes:ident),* ) => {
         {
@@ -68,21 +73,20 @@ impl BlogBot {
         })
     }
 
-    pub async fn run(&mut self) -> BoxResult<()> {
+    pub async fn run(&mut self) -> Result<(), BotError> {
         let me = self.api.send(GetMe).await?;
         self.me.replace(me);
         join(self.run_process_updates(), self.run_recurring_tasks()).await;
         Ok(())
     }
 
-
     async fn run_recurring_tasks(&self) {
         loop {
             let ret = self.send_updates_to_subscribers().await;
-            delay_for(Duration::from_secs(600)).await;
             if let Err(err) = ret {
                 dbg!(err);
             }
+            delay_for(Duration::from_secs(600)).await;
         }
     }
 
@@ -92,7 +96,7 @@ impl BlogBot {
             let update = match update {
                 Ok(update) => update,
                 Err(err) => {
-                    dbg!(format!("ERROR: {:?}", err));
+                    log::error!("{}", err);
                     continue;
                 }
             };
@@ -107,7 +111,7 @@ impl BlogBot {
                             )))
                             .await;
                     if let Err(err) = ret {
-                        dbg!(format!("ERROR: {:?}", err));
+                        log::error!("{}", err);
                     }
                 }
             }
@@ -115,7 +119,7 @@ impl BlogBot {
         ()
     }
 
-    async fn process(&self, msg: &Message) -> BoxResult<()> {
+    async fn process(&self, msg: &Message) -> Result<(), BotError> {
         match msg.kind {
             MessageKind::Text { ref data, .. } => {
                 routes!(self, data, msg, start, stop, check, latest, about);
@@ -125,16 +129,16 @@ impl BlogBot {
         Ok(())
     }
 
-    async fn start(&self, msg: &Message) -> BoxResult<()> {
+    async fn start(&self, msg: &Message) -> Result<(), BotError> {
         let id = msg.chat.id();
-        self.db.put(id)?;
+        self.db.put(id).context(DbOperation)?;
         self.api
             .send(msg.text_reply("You are now subscribed to the IfIBlog."))
             .await?;
         Ok(())
     }
 
-    async fn stop(&self, msg: &Message) -> BoxResult<()> {
+    async fn stop(&self, msg: &Message) -> Result<(), BotError> {
         let id = msg.chat.id();
         self.db.remove(id)?;
         self.api
@@ -143,7 +147,7 @@ impl BlogBot {
         Ok(())
     }
 
-    async fn check(&self, msg: &Message) -> BoxResult<()> {
+    async fn check(&self, msg: &Message) -> Result<(), BotError> {
         let id = msg.chat.id();
         let reply = if self.db.contains(id) {
             "You're currently subscribed to the blog. Enter /stop to unsubscribe."
@@ -154,7 +158,7 @@ impl BlogBot {
         Ok(())
     }
 
-    async fn latest(&self, msg: &Message) -> BoxResult<()> {
+    async fn latest(&self, msg: &Message) -> Result<(), BotError> {
         let post = self.fetch_latest_post()?;
         let post_text = format_post(&post);
         let mut reply = msg.text_reply(post_text);
@@ -162,7 +166,7 @@ impl BlogBot {
         Ok(())
     }
 
-    async fn about(&self, msg: &Message) -> BoxResult<()> {
+    async fn about(&self, msg: &Message) -> Result<(), BotError> {
         let mut reply = msg.text_reply(
             "Hi, im a small bot written by @robinhundt, that serves you the newest news \
             from the [CS deanery blog](https://blog.stud.uni-goettingen.de/informatikstudiendekanat/)\n\
@@ -172,7 +176,7 @@ impl BlogBot {
         Ok(())
     }
 
-    async fn send_updates_to_subscribers(&self) -> BoxResult<()> {
+    async fn send_updates_to_subscribers(&self) -> Result<(), BotError> {
         let latest_post = self.fetch_latest_post()?;
         {
             let mut curr_latest_post = self.latest_post.lock().await;
@@ -180,7 +184,6 @@ impl BlogBot {
                 curr_latest_post.replace(latest_post);
                 return Ok(());
             }
-
         }
 
         let post_text = format_post(&latest_post);
@@ -193,13 +196,13 @@ impl BlogBot {
         Ok(())
     }
 
-    fn fetch_latest_post(&self) -> BoxResult<Item> {
-        let channel = Channel::from_url(&self.rss_url)?;
+    fn fetch_latest_post(&self) -> Result<Item, BotError> {
+        let channel = Channel::from_url(&self.rss_url).context(FetchLatestPost)?;
         let item = channel
             .items()
             .get(0)
             .cloned()
-            .ok_or("No blogposts available!")?;
+            .ok_or(BotError::NoBlogpostAvailable)?;
         Ok(item)
     }
 }
@@ -209,4 +212,45 @@ fn format_post(post: &Item) -> String {
     let description = post.description().unwrap_or("No description!");
     let link = post.link().unwrap_or("No link!");
     format!("<b>{}</b>:\n{}\n{}", title, description, link)
+}
+
+
+#[derive(Debug, Snafu)]
+pub enum BotError {
+    #[snafu(display("Unable to initialize bot because GetMe failed: {}", source))]
+    FailedGetMe {
+        source: telegram_bot::Error
+    },
+    #[snafu(display("Failed DB operation: {}", source))]
+    DbOperation {
+        source: chat_ids::DbError
+    },
+    #[snafu(display("Failed API send operation: {}", source))]
+    ApiSend {
+        source: telegram_bot::Error
+    },
+    #[snafu(display("Unable to fetch latest post: {}", source))]
+    FetchLatestPost {
+        source: rss::Error
+    },
+    #[snafu(display("No blogposts available"))]
+    NoBlogpostAvailable 
+}
+
+impl From<chat_ids::DbError> for BotError {
+    fn from(source: chat_ids::DbError) -> Self { 
+        Self::DbOperation {
+            source
+        }
+     }
+    
+}
+
+impl From<telegram_bot::Error> for BotError {
+    fn from(source: telegram_bot::Error) -> Self { 
+        Self::ApiSend {
+            source
+        }
+     }
+    
 }
