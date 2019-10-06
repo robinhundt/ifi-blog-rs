@@ -10,11 +10,11 @@ use futures::StreamExt;
 use std::error::Error;
 use std::path::Path;
 use telegram_bot::prelude::*;
-use telegram_bot::{Api, GetMe, Message, MessageKind, ParseMode, UpdateKind, User, self};
+use telegram_bot::{self, Api, GetMe, Message, MessageKind, ParseMode, UpdateKind, User};
 use tokio::timer::delay_for;
 
 use futures::lock::Mutex;
-use rss::{Channel, Item, self};
+use rss::{self, Channel, Item};
 
 use snafu::{ResultExt, Snafu};
 
@@ -76,11 +76,13 @@ impl BlogBot {
     pub async fn run(&mut self) -> Result<(), BotError> {
         let me = self.api.send(GetMe).await?;
         self.me.replace(me);
+        log::info!("Running bot...");
         join(self.run_process_updates(), self.run_recurring_tasks()).await;
         Ok(())
     }
 
     async fn run_recurring_tasks(&self) {
+        log::info!("Starting recurring tasks loop...");
         loop {
             let ret = self.send_updates_to_subscribers().await;
             if let Err(err) = ret {
@@ -91,6 +93,7 @@ impl BlogBot {
     }
 
     async fn run_process_updates(&self) {
+        log::info!("Starting update loop...");
         let mut stream = self.api.stream();
         while let Some(update) = stream.next().await {
             let update = match update {
@@ -122,6 +125,7 @@ impl BlogBot {
     async fn process(&self, msg: &Message) -> Result<(), BotError> {
         match msg.kind {
             MessageKind::Text { ref data, .. } => {
+                log::info!("Handling message: {:?}", msg);
                 routes!(self, data, msg, start, stop, check, latest, about);
             }
             _ => (),
@@ -188,6 +192,7 @@ impl BlogBot {
 
         let post_text = format_post(&latest_post);
         for chat_id in self.db.iter() {
+            log::info!("Sending newest post to chat_id: {}", chat_id);
             self.api
                 .send(chat_id.text(&post_text).parse_mode(ParseMode::Html))
                 .await?;
@@ -214,43 +219,28 @@ fn format_post(post: &Item) -> String {
     format!("<b>{}</b>:\n{}\n{}", title, description, link)
 }
 
-
 #[derive(Debug, Snafu)]
 pub enum BotError {
     #[snafu(display("Unable to initialize bot because GetMe failed: {}", source))]
-    FailedGetMe {
-        source: telegram_bot::Error
-    },
+    FailedGetMe { source: telegram_bot::Error },
     #[snafu(display("Failed DB operation: {}", source))]
-    DbOperation {
-        source: chat_ids::DbError
-    },
+    DbOperation { source: chat_ids::DbError },
     #[snafu(display("Failed API send operation: {}", source))]
-    ApiSend {
-        source: telegram_bot::Error
-    },
+    ApiSend { source: telegram_bot::Error },
     #[snafu(display("Unable to fetch latest post: {}", source))]
-    FetchLatestPost {
-        source: rss::Error
-    },
+    FetchLatestPost { source: rss::Error },
     #[snafu(display("No blogposts available"))]
-    NoBlogpostAvailable 
+    NoBlogpostAvailable,
 }
 
 impl From<chat_ids::DbError> for BotError {
-    fn from(source: chat_ids::DbError) -> Self { 
-        Self::DbOperation {
-            source
-        }
-     }
-    
+    fn from(source: chat_ids::DbError) -> Self {
+        Self::DbOperation { source }
+    }
 }
 
 impl From<telegram_bot::Error> for BotError {
-    fn from(source: telegram_bot::Error) -> Self { 
-        Self::ApiSend {
-            source
-        }
-     }
-    
+    fn from(source: telegram_bot::Error) -> Self {
+        Self::ApiSend { source }
+    }
 }

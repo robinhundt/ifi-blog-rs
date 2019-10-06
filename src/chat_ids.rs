@@ -36,14 +36,14 @@ impl ChatIDs {
     /// Adds a ChatID to the database
     pub fn put(&self, id: ChatId) -> Result<(), DbError> {
         let key = i64::from(id).to_be_bytes();
-        self.db.put(&key, b"").context( Put {id})?;
+        self.db.put(&key, b"").context(Put { id })?;
         Ok(())
     }
 
     /// Removes a ChatID from the database
     pub fn remove(&self, id: ChatId) -> Result<(), DbError> {
         let key = i64::from(id).to_be_bytes();
-        self.db.delete(&key).context(Remove {id})?;
+        self.db.delete(&key).context(Remove { id })?;
         Ok(())
     }
 
@@ -68,14 +68,7 @@ pub enum DbError {
         path: PathBuf,
     },
     #[snafu(display("Unable to inser id {}: {:?}", id, source))]
-    Put {
-        source: rocksdb::Error,
-        id: ChatId
-    },
+    Put { source: rocksdb::Error, id: ChatId },
     #[snafu(display("Unable to inser id {}: {:?}", id, source))]
-    Remove {
-        source: rocksdb::Error,
-        id: ChatId
-    }
-    
+    Remove { source: rocksdb::Error, id: ChatId },
 }

@@ -1,6 +1,6 @@
+use env_logger::Env;
 use ifi_blog_rs::BlogBot;
 use std::env;
-use env_logger::Env;
 
 #[tokio::main]
 async fn main() -> Result<(), ifi_blog_rs::BotError> {
