@@ -88,7 +88,7 @@ impl BlogBot {
             if let Err(err) = ret {
                 dbg!(err);
             }
-            delay_for(Duration::from_secs(600)).await;
+            delay_for(Duration::from_secs(10)).await;
         }
     }
 
@@ -182,15 +182,21 @@ impl BlogBot {
 
     async fn send_updates_to_subscribers(&self) -> Result<(), BotError> {
         let latest_post = self.fetch_latest_post()?;
-        {
-            let mut curr_latest_post = self.latest_post.lock().await;
-            if curr_latest_post.as_ref() == Some(&latest_post) || curr_latest_post.is_none() {
-                curr_latest_post.replace(latest_post);
-                return Ok(());
-            }
-        }
 
-        let post_text = format_post(&latest_post);
+        let mut curr_latest_post = self.latest_post.lock().await;
+        if curr_latest_post.as_ref() == Some(&latest_post) || curr_latest_post.is_none() {
+            curr_latest_post.replace(latest_post);
+            return Ok(());
+        } else {
+            curr_latest_post.replace(latest_post);
+        }
+        let curr_latest_post = curr_latest_post;
+
+        let post_text = format_post(
+            curr_latest_post
+                .as_ref()
+                .expect("Bug: Unwrap on latest post failed after setting it"),
+        );
         for chat_id in self.db.iter() {
             log::info!("Sending newest post to chat_id: {}", chat_id);
             self.api
