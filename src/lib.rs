@@ -88,7 +88,7 @@ impl BlogBot {
             if let Err(err) = ret {
                 dbg!(err);
             }
-            delay_for(Duration::from_secs(10)).await;
+            delay_for(Duration::from_secs(600)).await;
         }
     }
 
