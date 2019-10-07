@@ -172,7 +172,7 @@ impl BlogBot {
 
     async fn about(&self, msg: &Message) -> Result<(), BotError> {
         let mut reply = msg.text_reply(
-            "Hi, im a small bot written by @robinhundt, that serves you the newest news \
+            "Hi, I'm a small bot written by @robinhundt, that serves you the newest news \
             from the [CS deanery blog](https://blog.stud.uni-goettingen.de/informatikstudiendekanat/)\n\
             You can look at my source code on [gitlab](https://gitlab.gwdg.de/robinwilliam.hundt/ifi-blog-rs).\n\
             I'm written in Rust with bleeding edge features! :D");
