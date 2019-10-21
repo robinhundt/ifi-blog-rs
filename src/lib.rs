@@ -86,7 +86,7 @@ impl BlogBot {
         loop {
             let ret = self.send_updates_to_subscribers().await;
             if let Err(err) = ret {
-                dbg!(err);
+                log::error!("{}", err);
             }
             delay_for(Duration::from_secs(600)).await;
         }
@@ -199,9 +199,11 @@ impl BlogBot {
         );
         for chat_id in self.db.iter() {
             log::info!("Sending newest post to chat_id: {}", chat_id);
-            self.api
+            if let Err(err) = self.api
                 .send(chat_id.text(&post_text).parse_mode(ParseMode::Html))
-                .await?;
+                .await {
+                    log::error!("{}", err);
+                }
         }
 
         Ok(())
