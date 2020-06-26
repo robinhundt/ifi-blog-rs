@@ -1,5 +1,8 @@
 mod chat_ids;
 use chat_ids::ChatIDs;
+mod db;
+pub(crate) mod util;
+
 
 #[macro_use]
 extern crate anyhow;
@@ -21,6 +24,7 @@ use std::collections::HashSet;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use std::iter::FromIterator;
+use sqlx::PgPool;
 
 
 struct BotContext {
@@ -69,6 +73,12 @@ impl BotContext {
 
 pub async fn run(rss_url: &str, db_path: impl AsRef<Path>) -> Result<()> {
     log::info!("Starting IfiBlogBot");
+    db::run_migrations().await?;
+    let mut pool = PgPool::new(
+        &env::var("DATABASE_URL").context("`DATABASE_URL` must be set to run this example")?,
+    )
+        .await?;
+
     let bot = Bot::from_env();
     let bot_ctx = Arc::new(BotContext::new(rss_url, db_path).await?);
     let bot_ctx2 = bot_ctx.clone();

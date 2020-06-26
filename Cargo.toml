@@ -16,3 +16,6 @@ teloxide = "0.2.0"
 pretty_env_logger = "0.4.0"
 serde = "1.0.114"
 bincode = "1.2.1"
+sqlx = { version = "0.3", default-features = false, features = [ "runtime-tokio", "postgres", "macros" ] }
+refinery = { version = "0.3", features = ["tokio-postgres"]}
+tokio-postgres = "0.5.4"
