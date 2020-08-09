@@ -1,16 +1,22 @@
 # Our first FROM statement declares the build environment.
-FROM ekidd/rust-musl-builder:latest AS builder
+FROM rust:latest AS builder
 
 # Add our source code.
-ADD --chown=rust:rust . ./
-
+COPY ./ ./
 # Build our application.
 RUN cargo build --release
 
+RUN mkdir -p /build-out
+RUN cp target/release/ifi-blog-rs /build-out
+
+
 # Now, we need to build our _real_ Docker container, copying in `using-diesel`.
-FROM alpine:latest
-RUN apk --no-cache add ca-certificates
+FROM debain:latest
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y install ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder \
-    /home/rust/src/target/x86_64-unknown-linux-musl/release/ifi-blog-rs \
+    /build-out/ifi-blog-rs \
     /usr/local/bin/
 CMD /usr/local/bin/ifi-blog-rs

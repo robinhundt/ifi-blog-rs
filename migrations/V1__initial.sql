@@ -1,5 +1,5 @@
 create table chats (
-    id serial primary key,
+    id integer primary key not null,
     chat_id bigint unique,
     channel_name varchar(100) unique,
     constraint id_name_not_null check (
