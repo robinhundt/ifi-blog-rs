@@ -38,6 +38,8 @@ struct BotContext {
     Admins can start/stop updates for channels via /start @channelname ."
 )]
 enum Command {
+    // TODO: The parse_split is necessary due to bug
+    // https://github.com/teloxide/teloxide-macros/issues/8
     #[command(description = "Start the automatic blog updates", parse_with = "split")]
     Start(OptChatId),
     #[command(description = "Stop the automatic blog updates", parse_with = "split")]
