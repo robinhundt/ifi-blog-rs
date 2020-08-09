@@ -223,7 +223,10 @@ async fn about(cx: &UpdateWithCx<Message>) -> Result<()> {
 
 async fn run_recurring_tasks(bot: Bot, ctx: Arc<BotContext>) {
     log::info!("Starting recurring tasks loop...");
-    log::info!("Subscribed chats: {:?}", ctx.db.iter().collect::<Vec<_>>());
+    log::info!(
+        "Subscribed chats: {:?}",
+        Chat::list(&ctx.db_pool).await.expect("Unable to retrieve subscribed chats")
+    );
     loop {
         let ret = send_updates_to_subscribers(bot.clone(), &ctx).await;
         if let Err(err) = ret {

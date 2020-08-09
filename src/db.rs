@@ -1,7 +1,7 @@
 use crate::util::display_iterable;
 use anyhow::{Context, Result};
 use refinery::config::{Config, ConfigDbType};
-use sqlx::{query_as, Acquire, FromRow, SqlitePool};
+use sqlx::{query_as, FromRow, SqlitePool};
 use std::env;
 use teloxide::types::ChatId;
 
