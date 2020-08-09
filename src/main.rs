@@ -1,7 +1,3 @@
-// use env_logger::Env;
-// use ifi_blog_rs::BlogBot;
-// use std::env;
-use tokio;
 use ifi_blog_rs::run;
 
 #[tokio::main]
@@ -14,5 +10,7 @@ async fn main() {
         )
         .filter(Some("teloxide"), log::LevelFilter::Error)
         .init();
-    run("https://blog.stud.uni-goettingen.de/informatikstudiendekanat/feed/", "chat_ids.db").await.unwrap()
+    run("https://blog.stud.uni-goettingen.de/informatikstudiendekanat/feed/")
+        .await
+        .unwrap()
 }

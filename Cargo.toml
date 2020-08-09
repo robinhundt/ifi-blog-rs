@@ -5,14 +5,17 @@ authors = ["robinwilliam.hundt <robinwilliam.hundt@stud.uni-goettingen.de>"]
 edition = "2018"
 
 [dependencies]
-rocksdb = "0.14.0"
 rss = { version = "1.8.0", features = ["from_url"] }
 futures = "0.3.5"
 futures-util = "0.3.5"
-tokio = {version = "0.2.21", features = ["time", "macros"]}
+tokio = {version = "0.2.22", features = ["time", "macros"]}
 log = "0.4.8"
 anyhow = "1.0.31"
-teloxide = "0.2.0"
+teloxide = "0.3.0"
 pretty_env_logger = "0.4.0"
-serde = "1.0.114"
-bincode = "1.2.1"
+sqlx = { version = "0.4.0-beta.1", default-features = false, features = [ "runtime-tokio", "sqlite", "macros" ] }
+refinery = { version = "0.3", features = ["tokio-postgres"]}
+
+[build-dependencies]
+refinery = { version = "0.3", features = ["rusqlite"]}
+sqlx = { version = "0.4.0-beta.1", default-features = false, features = [ "runtime-tokio", "sqlite", "macros" ] }

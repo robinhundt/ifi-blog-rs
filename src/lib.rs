@@ -1,33 +1,34 @@
-mod chat_ids;
-use chat_ids::ChatIDs;
-
 #[macro_use]
 extern crate anyhow;
 
-use teloxide::prelude::*;
-use teloxide::types::{ParseMode, ChatId};
-use teloxide::utils::command::BotCommand;
-use futures::{select};
+use crate::db::Chat;
+use anyhow::{Context, Result};
+use futures::select;
+use futures_util::core_reexport::str::FromStr;
 use futures_util::FutureExt;
-use anyhow::{Result, Context};
-use std::env;
-use std::sync::Arc;
-use tokio::time::{delay_for, Duration};
-use tokio::sync::Mutex;
-use rss::{Item, Channel};
-use std::path::Path;
-use std::ops::Not;
+use rss::{Channel, Item};
+use sqlx::SqlitePool;
 use std::collections::HashSet;
+use std::env;
+use std::iter::FromIterator;
+use std::ops::Not;
+use std::sync::Arc;
+use teloxide::prelude::*;
+use teloxide::types::{ChatId, ParseMode};
+use teloxide::utils::command::BotCommand;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
-use std::iter::FromIterator;
+use tokio::sync::Mutex;
+use tokio::time::{delay_for, Duration};
 
+pub mod db;
+pub(crate) mod util;
 
 struct BotContext {
     rss_url: String,
-    db: ChatIDs,
+    db_pool: SqlitePool,
     latest_post: Mutex<Option<Item>>,
-    admins: HashSet<String>
+    admins: HashSet<String>,
 }
 
 #[derive(BotCommand)]
@@ -37,44 +38,55 @@ struct BotContext {
     Admins can start/stop updates for channels via /start @channelname ."
 )]
 enum Command {
-    #[command(description = "Start the automatic blog updates")]
-    Start,
-    #[command(description = "Stop the automatic blog updates")]
-    Stop,
+    #[command(description = "Start the automatic blog updates", parse_with = "split")]
+    Start(OptChatId),
+    #[command(description = "Stop the automatic blog updates", parse_with = "split")]
+    Stop(OptChatId),
     #[command(description = "Display an about message")]
     About,
-    #[command(description = "Check whether you're currently subscribed")]
-    Check,
+    #[command(
+        description = "Check whether you're currently subscribed",
+        parse_with = "split"
+    )]
+    Check(OptChatId),
     #[command(description = "Fetch the latest blog post")]
     Latest,
     #[command(description = "Display this help message")]
-    Help
+    Help,
 }
 
+#[derive(Debug, Clone)]
+struct OptChatId(Option<ChatId>);
+
 impl BotContext {
-    async fn new(rss_url: &str, db_path: impl AsRef<Path>) -> Result<Self> {
-        let db = ChatIDs::new(db_path)?;
+    async fn new(rss_url: &str) -> Result<Self> {
         let mut buf = String::new();
         let mut admin_file = File::open("admin_list.txt").await?;
         admin_file.read_to_string(&mut buf).await?;
         let admins = HashSet::from_iter(buf.split_whitespace().map(|el| el.to_owned()));
+
+        let db_pool =
+            SqlitePool::connect(&env::var("DATABASE_URL").context("`DATABASE_URL` must be set")?)
+                .await?;
         Ok(Self {
             rss_url: rss_url.into(),
-            db,
+            db_pool,
             latest_post: Default::default(),
-            admins
+            admins,
         })
     }
 }
 
-pub async fn run(rss_url: &str, db_path: impl AsRef<Path>) -> Result<()> {
+pub async fn run(rss_url: &str) -> Result<()> {
     log::info!("Starting IfiBlogBot");
+    db::run_migrations()?;
+
     let bot = Bot::from_env();
-    let bot_ctx = Arc::new(BotContext::new(rss_url, db_path).await?);
+    let bot_ctx = Arc::new(BotContext::new(rss_url).await?);
     let bot_ctx2 = bot_ctx.clone();
-    let dispatcher = Dispatcher::new(bot.clone()).messages_handler( |rx| handle_commands(rx, bot_ctx2));
-    let dispatch = dispatcher.dispatch();
-    let mut dispatch = Box::pin(dispatch).fuse();
+    let dispatcher =
+        Dispatcher::new(bot.clone()).messages_handler(|rx| handle_commands(rx, bot_ctx2));
+    let mut dispatch = Box::pin(dispatcher.dispatch()).fuse();
     return select! {
          _ = dispatch => Err(anyhow!("Dispatcher stopped working")),
          _ = run_recurring_tasks(bot, bot_ctx).fuse() => Err(anyhow!("Recurring updates stopped working"))
@@ -84,96 +96,122 @@ pub async fn run(rss_url: &str, db_path: impl AsRef<Path>) -> Result<()> {
 async fn handle_commands(rx: DispatcherHandlerRx<Message>, bot_ctx: Arc<BotContext>) {
     let bot_name = env::var("BOT_NAME").expect("Env var 'BOT_NAME' must be set");
     let bot_ctx = &bot_ctx;
-    rx
-        .commands::<Command, &str>(&bot_name)
-        .for_each_concurrent(None, |(cx, command, args)| async move {
-            action(cx, bot_ctx, command, &args).await.log_on_error().await;
+    rx.commands::<Command, &str>(&bot_name)
+        .for_each_concurrent(None, |(cx, command)| async move {
+            action(cx, bot_ctx, command).await.log_on_error().await;
         })
         .await;
 }
 
-async fn action(
-    cx: DispatcherHandlerCx<Message>,
-    bot_ctx: &BotContext,
-    command: Command,
-    args: &[String],
-) -> Result<()> {
+async fn action(cx: UpdateWithCx<Message>, bot_ctx: &BotContext, command: Command) -> Result<()> {
     match command {
-        Command::Help => {
-            cx.answer(Command::descriptions()).send().await.map(drop)?
-        }
-        Command::Start => start(&cx, bot_ctx, args).await?,
-        Command::Stop => stop(&cx, bot_ctx, args).await?,
-        Command::Check => check(&cx, bot_ctx, args).await?,
+        Command::Help => cx.answer(Command::descriptions()).send().await.map(drop)?,
+        Command::Start(chat_id) => start(&cx, bot_ctx, chat_id).await?,
+        Command::Stop(chat_id) => stop(&cx, bot_ctx, chat_id).await?,
+        Command::Check(chat_id) => check(&cx, bot_ctx, chat_id).await?,
         Command::Latest => latest(&cx, bot_ctx).await?,
-        Command::About => about(&cx).await?
+        Command::About => about(&cx).await?,
     };
 
     Ok(())
 }
 
-async fn start(cx: &DispatcherHandlerCx<Message>, bot_ctx: &BotContext, args: &[String]) -> Result<()> {
-    let (id, needs_admin) = match args {
-        [id, ..] => (parse_id(id)?, true),
-        _ => (cx.chat_id().into(), false)
+async fn start(cx: &UpdateWithCx<Message>, bot_ctx: &BotContext, chat_id: OptChatId) -> Result<()> {
+    let (id, needs_admin) = match chat_id {
+        OptChatId(None) => (cx.chat_id().into(), false),
+        OptChatId(Some(id)) => (id, true),
     };
 
     if needs_admin {
         check_perm(cx, bot_ctx).await?;
     }
 
-    bot_ctx.db.put(&id).context("Unable to store ID in DB")?;
-    cx.bot.send_message(id.clone(),"You are now subscribed to the IfIBlog. The latest post is:")
+    let result = Chat::insert(&bot_ctx.db_pool, id.clone()).await;
+    if matches!(result, Err(_)) {
+        cx.bot
+            .send_message(
+                id.clone(),
+                "Unable to subscribe to the blog. Possibly you're already subscribed.",
+            )
+            .send()
+            .await?;
+        result.with_context(|| format!("Unable to store ID ({}) in DB", &id))?;
+    }
+    cx.bot
+        .send_message(
+            id.clone(),
+            "You are now subscribed to the IfIBlog. The latest post is:",
+        )
         .send()
         .await?;
     let post = format_post(&fetch_latest_post(bot_ctx)?);
-    cx.bot.send_message(id, post).parse_mode(ParseMode::HTML).send().await?;
-    Ok(())
-}
-
-async fn stop(cx: &DispatcherHandlerCx<Message>, bot_ctx: &BotContext, args: &[String]) -> Result<()> {
-    let (id, needs_admin) = match args {
-        [id, ..] => (parse_id(id)?, true),
-        _ => (cx.chat_id().into(), false)
-    };
-
-    if needs_admin {
-        check_perm(cx, bot_ctx).await?;
-    }
-    bot_ctx.db.remove(&id)?;
     cx.bot
-        .send_message(id, "You are now unsubscribed from the IfIBlog.").send()
+        .send_message(id, post)
+        .parse_mode(ParseMode::HTML)
+        .send()
         .await?;
     Ok(())
 }
 
-async fn check(cx: &DispatcherHandlerCx<Message>, bot_ctx: &BotContext, args: &[String]) -> Result<()> {
-    let (id, needs_admin) = match args {
-        [id, ..] => (parse_id(id)?, true),
-        _ => (cx.chat_id().into(), false)
+async fn stop(cx: &UpdateWithCx<Message>, bot_ctx: &BotContext, chat_id: OptChatId) -> Result<()> {
+    let (id, needs_admin) = match chat_id {
+        OptChatId(None) => (cx.chat_id().into(), false),
+        OptChatId(Some(id)) => (id, true),
     };
 
     if needs_admin {
         check_perm(cx, bot_ctx).await?;
     }
-    let pronoun = if needs_admin {format!("{} is", id)} else {"You're".to_owned()};
-    let reply = if bot_ctx.db.contains(&id) {
-        format!("{} currently subscribed to the blog. Enter /stop to unsubscribe.", pronoun)
+    Chat::delete(&bot_ctx.db_pool, id.clone())
+        .await
+        .with_context(|| format!("Unable to remove ID ({}) from DB", &id))?;
+    cx.bot
+        .send_message(id, "You are now unsubscribed from the IfIBlog.")
+        .send()
+        .await?;
+    Ok(())
+}
+
+async fn check(cx: &UpdateWithCx<Message>, bot_ctx: &BotContext, chat_id: OptChatId) -> Result<()> {
+    let (id, needs_admin) = match chat_id {
+        OptChatId(None) => (cx.chat_id().into(), false),
+        OptChatId(Some(id)) => (id, true),
+    };
+
+    if needs_admin {
+        check_perm(cx, bot_ctx).await?;
+    }
+    let pronoun = if needs_admin {
+        format!("{} is", id)
     } else {
-        format!("{} currently not subscribed to the blog. Enter /start to subscribe.", pronoun)
+        "You're".to_owned()
+    };
+    let reply = if Chat::contains(&bot_ctx.db_pool, id).await? {
+        format!(
+            "{} currently subscribed to the blog. Enter /stop to unsubscribe.",
+            pronoun
+        )
+    } else {
+        format!(
+            "{} currently not subscribed to the blog. Enter /start to subscribe.",
+            pronoun
+        )
     };
     cx.reply_to(reply).send().await?;
     Ok(())
 }
 
-async fn latest(cx: &DispatcherHandlerCx<Message>, bot_ctx: &BotContext) -> Result<()> {
+async fn latest(cx: &UpdateWithCx<Message>, bot_ctx: &BotContext) -> Result<()> {
     let post = fetch_latest_post(bot_ctx)?;
     let post_text = format_post(&post);
-    cx.reply_to(post_text).parse_mode(ParseMode::HTML).send().await?;
+    cx.reply_to(post_text)
+        .parse_mode(ParseMode::HTML)
+        .send()
+        .await?;
     Ok(())
 }
 
-async fn about(cx: &DispatcherHandlerCx<Message>) -> Result<()> {
+async fn about(cx: &UpdateWithCx<Message>) -> Result<()> {
     let reply = cx.reply_to(
         "Hi, I'm a small bot written by @robinhundt, that serves you the newest news \
         from the [CS deanery blog](https://blog.stud.uni-goettingen.de/informatikstudiendekanat/)\n\
@@ -183,7 +221,7 @@ async fn about(cx: &DispatcherHandlerCx<Message>) -> Result<()> {
     Ok(())
 }
 
-async fn run_recurring_tasks(bot: Arc<Bot>, ctx: Arc<BotContext>) {
+async fn run_recurring_tasks(bot: Bot, ctx: Arc<BotContext>) {
     log::info!("Starting recurring tasks loop...");
     log::info!("Subscribed chats: {:?}", ctx.db.iter().collect::<Vec<_>>());
     loop {
@@ -195,7 +233,7 @@ async fn run_recurring_tasks(bot: Arc<Bot>, ctx: Arc<BotContext>) {
     }
 }
 
-async fn send_updates_to_subscribers(bot: Arc<Bot>, ctx: &BotContext) -> Result<()> {
+async fn send_updates_to_subscribers(bot: Bot, ctx: &BotContext) -> Result<()> {
     let latest_post = fetch_latest_post(ctx)?;
 
     let mut curr_latest_post = ctx.latest_post.lock().await;
@@ -212,12 +250,17 @@ async fn send_updates_to_subscribers(bot: Arc<Bot>, ctx: &BotContext) -> Result<
             .as_ref()
             .expect("Bug: Unwrap on latest post failed after setting it"),
     );
-    for chat_id in ctx.db.iter() {
-        log::info!("Sending newest post to chat_id: {}", chat_id);
-        if let Err(err) = bot.send_message(chat_id, &post_text).parse_mode(ParseMode::HTML).send()
-            .await {
-                log::error!("{}", err);
-            }
+    for chat in Chat::list(&ctx.db_pool).await? {
+        let chat_id = chat.get_chat_id();
+        log::info!("Sending newest post to chat: {}", chat_id);
+        if let Err(err) = bot
+            .send_message(chat_id, &post_text)
+            .parse_mode(ParseMode::HTML)
+            .send()
+            .await
+        {
+            log::error!("{}", err);
+        }
     }
 
     Ok(())
@@ -233,27 +276,26 @@ fn fetch_latest_post(ctx: &BotContext) -> Result<Item> {
     Ok(item)
 }
 
-fn parse_id(id: &str) -> Result<ChatId> {
-    let id = if id.starts_with("@") {
-        id.to_owned().into()
-    } else {
-        id.parse::<i64>()?.into()
-    };
-    Ok(id)
-}
-
-async fn check_perm(cx: &DispatcherHandlerCx<Message>, bot_ctx: &BotContext) -> Result<()> {
-    let from_user = cx.update.from().context("Received update from no user")?
-        .username.as_ref().context("User has no username")?;
+async fn check_perm(cx: &UpdateWithCx<Message>, bot_ctx: &BotContext) -> Result<()> {
+    let from_user = cx
+        .update
+        .from()
+        .context("Received update from no user")?
+        .username
+        .as_ref()
+        .context("User has no username")?;
 
     if bot_ctx.admins.contains(from_user).not() {
-        cx.reply_to("You don't have admin privileges. Write @robinhundt if you feel like \
-        you deserve them.").send().await?;
-        Err(anyhow!("{} has no admin permissions.", from_user).into())
+        cx.reply_to(
+            "You don't have admin privileges. Write @robinhundt if you feel like \
+        you deserve them.",
+        )
+        .send()
+        .await?;
+        Err(anyhow!("{} has no admin permissions.", from_user))
     } else {
         Ok(())
     }
-
 }
 
 fn format_post(post: &Item) -> String {
@@ -261,4 +303,22 @@ fn format_post(post: &Item) -> String {
     let description = post.description().unwrap_or("No description!");
     let link = post.link().unwrap_or("No link!");
     format!("<b>{}</b>:\n{}\n{}", title, description, link)
+}
+
+impl FromStr for OptChatId {
+    type Err = anyhow::Error;
+
+    fn from_str(id: &str) -> Result<Self, Self::Err> {
+        if id.is_empty() {
+            return Ok(OptChatId(None));
+        }
+        let id: ChatId = if id.starts_with('@') {
+            id.to_owned().into()
+        } else {
+            id.parse::<i64>()
+                .context("ChatId must start with @ or be valid integer")?
+                .into()
+        };
+        Ok(OptChatId(Some(id)))
+    }
 }

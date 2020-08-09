@@ -1,48 +1,22 @@
-# ------------------------------------------------------------------------------
-# Cargo Build Stage
-# ------------------------------------------------------------------------------
+# Our first FROM statement declares the build environment.
+FROM rust:latest AS builder
 
-FROM rustlang/rust:nightly as cargo-build
+# Add our source code.
+COPY ./ ./
+# Build our application.
+RUN cargo build --release
 
-RUN apt-get update
+RUN mkdir -p /build-out
+RUN cp target/release/ifi-blog-rs /build-out
 
-RUN apt-get install musl-tools -y
-RUN apt-get install open -y
 
-RUN rustup target add x86_64-unknown-linux-musl
+# Now, we need to build our _real_ Docker container, copying in `using-diesel`.
+FROM debain:latest
 
-WORKDIR /usr/src/myapp
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get -y install ca-certificates libssl-dev && rm -rf /var/lib/apt/lists/*
 
-COPY Cargo.toml Cargo.toml
-
-RUN mkdir src/
-
-RUN echo "fn main() {println!(\"if you see this, the build broke\")}" > src/main.rs
-
-RUN RUSTFLAGS=-Clinker=musl-gcc cargo build --release --target=x86_64-unknown-linux-musl
-
-RUN rm -f target/x86_64-unknown-linux-musl/release/deps/myapp*
-
-COPY . .
-
-RUN RUSTFLAGS=-Clinker=musl-gcc cargo build --release --target=x86_64-unknown-linux-musl
-
-# ------------------------------------------------------------------------------
-# Final Stage
-# ------------------------------------------------------------------------------
-
-FROM alpine:latest
-
-RUN addgroup -g 1000 myapp
-
-RUN adduser -D -s /bin/sh -u 1000 -G myapp myapp
-
-WORKDIR /home/myapp/bin/
-
-COPY --from=cargo-build /usr/src/myapp/target/x86_64-unknown-linux-musl/release/myapp .
-
-RUN chown myapp:myapp myapp
-
-USER myapp
-
-CMD ["./myapp"]
+COPY --from=builder \
+    /build-out/ifi-blog-rs \
+    /usr/local/bin/
+CMD /usr/local/bin/ifi-blog-rs
